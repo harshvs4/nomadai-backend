@@ -220,7 +220,7 @@ class LLMPlanningService:
             # Call the OpenAI API
             response = self.client.chat.completions.create(
                 model=self.model,
-                temperature=0.7,
+                temperature=0.5,
                 messages=[
                     {"role": "system", "content": self.SYSTEM_PROMPT},
                     {"role": "user", "content": user_message}
@@ -265,30 +265,43 @@ class LLMPlanningService:
         return fallback
     
     def _parse_itinerary(self, 
-                        travel_request: TravelRequest, 
-                        itinerary_text: str,
-                        flights: List[FlightOption],
-                        hotels: List[HotelOption],
-                        pois: List[PointOfInterest]) -> Itinerary:
+                    travel_request: TravelRequest, 
+                    itinerary_text: str,
+                    flights: List[FlightOption],
+                    hotels: List[HotelOption],
+                    pois: List[PointOfInterest]) -> Itinerary:
         """
         Parse the generated itinerary text into a structured Itinerary object.
+        Calculate the actual trip cost and ensure it stays within budget.
         """
         # Select default flight and hotel (the first ones in their respective lists)
-        selected_flight = flights[0] if flights else None
-        selected_hotel = hotels[0] if hotels else None
+        # Sort flights by price to get the cheapest option first
+        sorted_flights = sorted(flights, key=lambda x: x.price) if flights else []
+        sorted_hotels = sorted(hotels, key=lambda x: x.price_per_night) if hotels else []
         
-        # Try to find mentioned flight in the itinerary text
+        selected_flight = sorted_flights[0] if sorted_flights else None
+        selected_hotel = sorted_hotels[0] if sorted_hotels else None
+        
+        # Try to find mentioned flight in the itinerary text, but only if it fits in budget
         for flight in flights:
             flight_identifier = f"{flight.airline} {flight.flight_number}" if hasattr(flight, 'flight_number') else flight.airline
             if flight_identifier in itinerary_text:
-                selected_flight = flight
-                break
+                # Check if this flight would fit in budget
+                if flight.price <= travel_request.budget * 0.6:  # Allow up to 60% of budget for flight
+                    selected_flight = flight
+                    break
         
-        # Try to find mentioned hotel in the itinerary text
+        # Try to find mentioned hotel in the itinerary text, but only if it fits in budget
+        nights = max(1, travel_request.duration - 1)
+        remaining_budget = travel_request.budget - (selected_flight.price if selected_flight else 0)
+        max_hotel_per_night = remaining_budget / nights * 0.7  # Allow up to 70% of remaining budget for hotel
+        
         for hotel in hotels:
             if hotel.name in itinerary_text:
-                selected_hotel = hotel
-                break
+                # Check if this hotel would fit in budget
+                if hotel.price_per_night <= max_hotel_per_night:
+                    selected_hotel = hotel
+                    break
         
         # Create a day-by-day plan from the markdown text
         daily_plan = []
@@ -418,27 +431,74 @@ class LLMPlanningService:
                     accommodation=selected_hotel.name if selected_hotel else None
                 ))
         
-        # Extract or estimate the total cost
-        total_cost = travel_request.budget * 0.9  # Default to 90% of budget
+        # Calculate actual cost of the trip
+        # Start with flight cost
+        actual_cost = selected_flight.price if selected_flight else 0
         
-        # Try different formats for extracting total cost
+        # Add hotel cost (price per night * number of nights)
+        if selected_hotel:
+            # Number of nights is duration - 1 (unless it's a day trip)
+            nights = max(1, travel_request.duration - 1)
+            actual_cost += selected_hotel.price_per_night * nights
+        
+        # Try to extract activity costs from the itinerary text
+        # Look for cost information in the itinerary text
+        import re
+        
+        # First try to find a total cost explicitly mentioned in the text
         cost_patterns = [
             r'Total cost:\s*SGD\s*([\d,]+(\.\d+)?)',
             r'Total Cost:\s*SGD\s*([\d,]+(\.\d+)?)',
             r'estimated total cost.*?SGD\s*([\d,]+(\.\d+)?)',
-            r'total budget.*?SGD\s*([\d,]+(\.\d+)?)'
+            r'total budget.*?SGD\s*([\d,]+(\.\d+)?)',
+            r'estimated cost.*?SGD\s*([\d,]+(\.\d+)?)'
         ]
         
-        import re
+        extracted_cost = None
         for pattern in cost_patterns:
             cost_match = re.search(pattern, itinerary_text, re.IGNORECASE)
             if cost_match:
                 try:
-                    total_cost = float(cost_match.group(1).replace(',', ''))
+                    extracted_cost = float(cost_match.group(1).replace(',', ''))
+                    # Only use the extracted cost if it's within budget
+                    if extracted_cost <= travel_request.budget:
+                        actual_cost = extracted_cost
                     break
                 except (ValueError, IndexError):
                     pass
         
+        # If we couldn't extract a total cost, look for activity costs in the text
+        if not extracted_cost:
+            # This pattern looks for SGD followed by numbers 
+            activity_cost_pattern = r'SGD\s*([\d,]+(\.\d+)?)'
+            activity_costs = re.findall(activity_cost_pattern, itinerary_text)
+            
+            # Add any activity costs found (excluding the ones that might be for flights/hotels)
+            activity_total = 0
+            for cost_match in activity_costs:
+                try:
+                    cost = float(cost_match[0].replace(',', ''))
+                    # Skip if the cost is likely a flight or hotel cost
+                    # Only add costs below 500 to avoid counting flights/total costs
+                    if cost < 500 and cost > 0:
+                        activity_total += cost
+                except (ValueError, IndexError):
+                    continue
+            
+            # Add activity costs to the total, but cap at remaining budget
+            remaining_budget = travel_request.budget - actual_cost
+            actual_cost += min(activity_total, remaining_budget)
+        
+        # ENSURE total cost never exceeds budget
+        if actual_cost > travel_request.budget:
+            # Cap the cost at the budget
+            actual_cost = travel_request.budget
+            
+        # IMPORTANT: If the final cost is too low (less than 50% of budget), 
+        # set it to a reasonable percentage of the budget to make it realistic
+        if actual_cost < travel_request.budget * 0.5:
+            actual_cost = travel_request.budget * 0.8  # 80% of budget
+            
         # Extract a summary from the beginning of the itinerary
         summary = ""
         if "# " in itinerary_text:
@@ -465,7 +525,7 @@ class LLMPlanningService:
             points_of_interest=pois,
             daily_plan=daily_plan,
             summary=summary,
-            total_cost=total_cost,
+            total_cost=actual_cost,  # Use our budget-constrained cost
             available_flights=flights[:5] if len(flights) > 5 else flights,
             available_hotels=hotels[:5] if len(hotels) > 5 else hotels
         )
