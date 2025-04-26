@@ -78,3 +78,4 @@ class Itinerary(BaseModel):
     total_cost: float
     available_flights: List[FlightOption] = []
     available_hotels: List[HotelOption] = []
+    raw_text: str = ""

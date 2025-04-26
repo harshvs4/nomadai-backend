@@ -1,6 +1,7 @@
 import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from datetime import date
 from typing import List, Optional
@@ -9,6 +10,7 @@ import uvicorn
 from amadeus_service import AmadeusService
 from google_places_service import GooglePlacesService
 from llm_service import LLMPlanningService
+from audio_guide_service import router as audio_guide_router
 
 # Initialize services
 amadeus_service = AmadeusService()
@@ -25,6 +27,15 @@ app.add_middleware(
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
 )
+
+# Mount static files directory
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+os.makedirs(static_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+# Include the audio guide router
+app.include_router(audio_guide_router)
+
 
 # Models
 class TravelRequestModel(BaseModel):
@@ -134,19 +145,14 @@ async def generate_itinerary(request: TravelRequestModel):
 async def chat(message: ChatMessageModel):
     try:
         # Process the message with LLM
-        # Note: You'll need to implement this in llm_service.py
-        # or adapt the existing methods
-        response = {"reply": "This is a placeholder response. You'll need to implement the actual chat functionality."}
-        
-        # For now, we'll simulate a response
-        response = {
-            "reply": f"I received your message about the itinerary {message.request_id}. How can I help?",
-            "updated_itinerary": None  # This could be populated if the chat resulted in itinerary changes
-        }
-        
+        response = await llm_service.sendChatMessage(
+            itinerary_id=message.request_id,
+            message=message.message
+        )
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
 
 @app.patch("/api/itinerary/{request_id}")
 async def update_itinerary(request_id: str, updates: ItineraryUpdateModel):
