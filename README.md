@@ -8,6 +8,7 @@ A FastAPI-based backend service for intelligent travel planning, integrating fli
 - **Hotel Booking**: Comprehensive hotel search and booking capabilities
 - **Points of Interest**: Google Places integration for discovering local attractions
 - **AI-Powered Planning**: LLM-based itinerary generation and personalization
+- **Audio Guide**: AI-generated audio guides for points of interest using TTS technology
 - **RESTful API**: Clean, documented endpoints for easy integration
 
 ## Tech Stack
@@ -18,6 +19,10 @@ A FastAPI-based backend service for intelligent travel planning, integrating fli
   - Amadeus API (Flights & Hotels)
   - Google Places API
   - OpenAI API (for LLM services)
+- **AI Models**:
+  - OpenAI GPT-4 (for itinerary generation and chat)
+  - TTS (Text-to-Speech) models:
+    - Tacotron2-DDC (for audio guide generation)
 - **Database**: (To be implemented)
 
 ## Project Structure
@@ -76,6 +81,7 @@ Once the server is running, visit:
 - `GET /api/points-of-interest` - Get local attractions
 - `POST /api/itinerary/generate` - Generate personalized itinerary
 - `POST /api/chat` - Interactive chat for itinerary modifications
+- `POST /api/audio-guide` - Generate audio guide for points of interest
 
 ## Environment Variables
 
